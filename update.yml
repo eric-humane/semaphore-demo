@@ -1,0 +1,51 @@
+---
+- name: System + firmware update with conditional reboot
+  hosts: all
+  become: true
+  vars:
+    reboot_timeout: 900
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Perform dist-upgrade
+      ansible.builtin.apt:
+        upgrade: dist
+      register: apt_upgrade
+
+    - name: Refresh fwupd metadata
+      ansible.builtin.command: fwupdmgr refresh --force
+      changed_when: false
+
+    - name: Apply firmware updates
+      ansible.builtin.command: fwupdmgr upgrade -y
+      register: fwupd_upgrade
+      failed_when: fwupd_upgrade.rc not in [0, 2]
+      # rc=2 means "no updates available"
+
+    - name: Check if reboot is required (apt)
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_apt
+
+    - name: Check if reboot is required (fwupd)
+      ansible.builtin.command: fwupdmgr get-devices
+      register: fwupd_devices
+      changed_when: false
+
+    - name: Determine if reboot is required
+      ansible.builtin.set_fact:
+        reboot_required: >-
+          {{
+            reboot_required_apt.stat.exists or
+            ('reboot' in fwupd_devices.stdout | lower)
+          }}
+
+    - name: Reboot if required
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ reboot_timeout }}"
+        msg: "Reboot initiated by Ansible after system/firmware updates"
+      when: reboot_required
