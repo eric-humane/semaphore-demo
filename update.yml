@@ -6,6 +6,22 @@
     reboot_timeout: 900
 
   tasks:
+    - name: Preflight - show remote user (no become)
+      ansible.builtin.command: whoami
+      register: whoami_plain
+      changed_when: false
+    
+    - name: Preflight - show effective user with become
+      become: true
+      ansible.builtin.command: id -u
+      register: uid_root
+      changed_when: false
+    
+    - name: Fail if become is not working
+      ansible.builtin.fail:
+        msg: "Become is not active. Plain user={{ whoami_plain.stdout }}, uid_with_become={{ uid_root.stdout }}. Fix Semaphore inventory/template sudo config."
+      when: uid_root.stdout != "0"
+      
     - name: Update apt cache
       ansible.builtin.apt:
         update_cache: yes
