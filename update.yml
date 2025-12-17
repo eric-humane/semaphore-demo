@@ -136,8 +136,12 @@
       ansible.builtin.debug:
         msg: "reboot_required={{ reboot_required }} (apt={{ reboot_required_apt.stat.exists }}, fwupd_reboot_hint={{ 'reboot' in (fwupd_devices.stdout | lower) }})"
 
-    - name: Reboot if required
+    - name: Reboot if required (fast return)
       ansible.builtin.reboot:
-        reboot_timeout: "{{ reboot_timeout }}"
         msg: "Reboot initiated by Ansible after system/firmware updates"
+        reboot_timeout: "{{ reboot_timeout }}"
+        pre_reboot_delay: 0
+        post_reboot_delay: 5
+        connect_timeout: 5
+        test_command: "systemctl is-system-running --wait || true"
       when: reboot_required
