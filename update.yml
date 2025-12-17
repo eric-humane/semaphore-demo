@@ -88,9 +88,9 @@
         msg: |
           apt dist-upgrade (rc={{ apt_upgrade.rc }})
           --- stdout (tail) ---
-          {{ (apt_upgrade.stdout | default('') | splitlines() | last(30)) | join('\n') }}
+          {{ ((apt_upgrade.stdout | default('')) | split('\n'))[-30:] | join('\n') }}
           --- stderr (tail) ---
-          {{ (apt_upgrade.stderr | default('') | splitlines() | last(30)) | join('\n') }}
+          {{ ((apt_upgrade.stderr | default('')) | split('\n'))[-30:] | join('\n') }}
 
     # --- SNAP (update/upgrade) ---
 
