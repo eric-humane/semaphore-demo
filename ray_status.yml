@@ -1,32 +1,37 @@
 # ray_status.yml
 ---
-- name: Ray status (run on head/controller and report)
+- name: Ray status on controller
   hosts: controller
   become: true
   vars:
-    container_name: "ray-head"   # must match your head container name
+    container_name: ray-head
   tasks:
-    - name: Run `ray status` inside head container
+    - name: Run ray status inside head container
       ansible.builtin.command: docker exec {{ container_name }} ray status
       register: ray_status
       changed_when: false
 
-    - name: Print Ray status
+    - name: Print ray status
       ansible.builtin.debug:
-        msg: "{{ ray_status.stdout | default('') }}"
+        var: ray_status.stdout
 
-- name: Ray status (optional: show per-worker local Ray processes)
+- name: Ray worker process check
   hosts: spark
   become: true
   vars:
-    worker_container_name: "ray-worker"
+    worker_container_name: ray-worker
   tasks:
-    - name: Show Ray processes inside worker container (best-effort)
-      ansible.builtin.command: docker exec {{ worker_container_name }} ps aux | egrep 'ray::|raylet|gcs|dashboard|ray start' || true
+    - name: Show ray processes inside worker container
+      ansible.builtin.shell: |
+        set -o pipefail
+        docker exec {{ worker_container_name }} sh -lc \
+          "ps aux | egrep 'ray::|raylet|gcs|dashboard|ray start' || true"
+      args:
+        executable: /bin/bash
       register: worker_ray_ps
       changed_when: false
 
-    - name: Print worker Ray process summary
+    - name: Print worker process summary
       ansible.builtin.debug:
         msg: |
           {{ inventory_hostname }}:
