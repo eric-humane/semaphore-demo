@@ -84,6 +84,15 @@
       register: apt_upgrade
       changed_when: "'0 upgraded' not in (apt_upgrade.stdout + apt_upgrade.stderr)"
 
+    - name: Show apt dist-upgrade output (tail)
+      ansible.builtin.debug:
+        msg: |
+          apt dist-upgrade (rc={{ apt_upgrade.rc }})
+          --- stdout (tail) ---
+          {{ (apt_upgrade.stdout | default('') | splitlines() | last(30)) | join('\n') }}
+          --- stderr (tail) ---
+          {{ (apt_upgrade.stderr | default('') | splitlines() | last(30)) | join('\n') }}
+
     # --- SNAP (update/upgrade) ---
 
     - name: Check if snap is installed
@@ -100,6 +109,14 @@
         (snap_refresh.stdout | lower) is not search("no updates available")
       when: snap_cmd.rc == 0
 
+    - name: Show snap refresh output
+      ansible.builtin.debug:
+        msg: |
+          snap refresh (rc={{ snap_refresh.rc }})
+          {{ snap_refresh.stdout | default('') }}
+          {{ snap_refresh.stderr | default('') }}
+      when: snap_cmd.rc == 0
+
     # --- FWUPD ---
 
     - name: Refresh fwupd metadata
@@ -111,6 +128,13 @@
       register: fwupd_upgrade
       failed_when: fwupd_upgrade.rc not in [0, 2]   # 2 == no updates
       changed_when: fwupd_upgrade.rc == 0
+
+    - name: Show fwupdmgr upgrade output
+      ansible.builtin.debug:
+        msg: |
+          fwupdmgr upgrade (rc={{ fwupd_upgrade.rc }})
+          {{ fwupd_upgrade.stdout | default('') }}
+          {{ fwupd_upgrade.stderr | default('') }}
 
     # --- Reboot detection + reboot ---
 
@@ -144,4 +168,13 @@
         post_reboot_delay: 5
         connect_timeout: 5
         test_command: "systemctl is-system-running --wait || true"
+      register: reboot_result
+      when: reboot_required
+
+    - name: Show reboot timing
+      ansible.builtin.debug:
+        msg: |
+          reboot: changed={{ reboot_result.changed | default(false) }}
+          elapsed={{ reboot_result.elapsed | default('unknown') }}s
+          msg={{ reboot_result.msg | default('') }}
       when: reboot_required
