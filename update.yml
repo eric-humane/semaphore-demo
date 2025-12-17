@@ -2,7 +2,6 @@
 - name: System + firmware update with conditional reboot
   hosts: spark
   become: true
-  serial: 1
   max_fail_percentage: 0
   vars:
     reboot_timeout: 900
