@@ -1,0 +1,97 @@
+# vllm_serve.yml
+---
+- name: Start vLLM serve inside ray-head container on controller
+  hosts: controller
+  become: true
+  vars:
+    # ---- Required-ish knobs (override via --extra-vars) ----
+    container_name: ray-head
+    model: "meta-llama/Llama-3.1-8B-Instruct"
+    served_model_name: ""          # empty => vLLM default
+    port: 8000
+    host: "0.0.0.0"
+
+    # ---- Ray integration ----
+    distributed_executor_backend: "ray"   # "ray" or "" (empty disables)
+    ray_address: "auto"                  # usually "auto" inside head container
+
+    # ---- Common vLLM knobs ----
+    tensor_parallel_size: 1
+    pipeline_parallel_size: 1
+    max_model_len: 8192
+    gpu_memory_utilization: 0.90
+    dtype: "auto"
+    trust_remote_code: true
+
+    # ---- Optional auth / env ----
+    hf_home: "/root/.cache/huggingface"  # already mounted in your head container
+    hf_token: ""                         # set if needed
+    api_key: ""                          # if you want --api-key
+    extra_env: {}                        # dict of extra env vars
+    extra_args: ""                       # raw extra flags appended at end
+
+    # ---- Process mgmt ----
+    log_path: "/tmp/vllm-serve.log"
+    pid_path: "/tmp/vllm-serve.pid"
+    restart: true                        # set false to “start if not running”
+
+  tasks:
+    - name: Build vLLM serve command
+      ansible.builtin.set_fact:
+        vllm_cmd: >-
+          vllm serve {{ model | quote }}
+          --host {{ host }} --port {{ port }}
+          --tensor-parallel-size {{ tensor_parallel_size }}
+          --pipeline-parallel-size {{ pipeline_parallel_size }}
+          --max-model-len {{ max_model_len }}
+          --gpu-memory-utilization {{ gpu_memory_utilization }}
+          --dtype {{ dtype }}
+          {% if trust_remote_code %} --trust-remote-code{% endif %}
+          {% if served_model_name | length > 0 %} --served-model-name {{ served_model_name | quote }}{% endif %}
+          {% if distributed_executor_backend | length > 0 %} --distributed-executor-backend {{ distributed_executor_backend }}{% endif %}
+          {% if distributed_executor_backend == 'ray' and ray_address | length > 0 %} --ray-address {{ ray_address }}{% endif %}
+          {% if api_key | length > 0 %} --api-key {{ api_key | quote }}{% endif %}
+          {{ extra_args }}
+
+    - name: Check if vLLM serve is already running in container
+      ansible.builtin.command: >-
+        docker exec {{ container_name }} sh -lc
+        "pgrep -af 'vllm serve' || true"
+      register: vllm_running
+      changed_when: false
+
+    - name: Stop existing vLLM serve (if restart=true and running)
+      ansible.builtin.command: >-
+        docker exec {{ container_name }} sh -lc
+        "pkill -f 'vllm serve' || true; rm -f {{ pid_path }} || true"
+      when: restart and (vllm_running.stdout | length > 0)
+      changed_when: true
+      failed_when: false
+
+    - name: Start vLLM serve in background inside container
+      ansible.builtin.command: >-
+        docker exec -d
+        {% if hf_token | length > 0 %}-e HF_TOKEN={{ hf_token | quote }}{% endif %}
+        -e HF_HOME={{ hf_home | quote }}
+        {% if extra_env is mapping %}
+        {% for k, v in extra_env.items() %}-e {{ k }}={{ v | quote }} {% endfor %}
+        {% endif %}
+        {{ container_name }} sh -lc
+        "nohup {{ vllm_cmd }} > {{ log_path }} 2>&1 & echo \$! > {{ pid_path }}"
+      when: restart or (vllm_running.stdout | length == 0)
+      register: start_out
+      changed_when: true
+
+    - name: Show serve status and where logs are
+      ansible.builtin.command: >-
+        docker exec {{ container_name }} sh -lc
+        "echo 'CMD: {{ vllm_cmd }}';
+         echo 'PID:'; (cat {{ pid_path }} 2>/dev/null || true);
+         echo 'PROCESS:'; (pgrep -af 'vllm serve' || true);
+         echo 'LOG_TAIL:'; (tail -n 60 {{ log_path }} 2>/dev/null || true)"
+      register: status_out
+      changed_when: false
+
+    - name: Print status
+      ansible.builtin.debug:
+        var: status_out.stdout
