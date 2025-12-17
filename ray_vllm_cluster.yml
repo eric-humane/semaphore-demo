@@ -1,16 +1,5 @@
 # ray_vllm_cluster.yml
 ---
-# Inventory layout assumed:
-#   [controller]
-#   blossom
-#
-#   [spark]
-#   bubbles
-#   bunny
-#   buttercup
-#
-# Controller runs the Ray head. spark group runs Ray workers.
-
 - name: Start Ray head container on controller
   hosts: controller
   become: true
@@ -21,22 +10,38 @@
     ray_port: 6379
     container_name: "ray-head"
     shm_size: "10.24g"
+
+    # Default: do NOT install deps during run (Semaphore-friendly)
+    install_deps: false
+
+  pre_tasks:
+    - name: Preflight - must be root via become
+      ansible.builtin.command: id -u
+      register: uid_root
+      changed_when: false
+
+    - name: Fail if become is not active
+      ansible.builtin.fail:
+        msg: "Become is not active (uid={{ uid_root.stdout }}). Fix Semaphore sudo/become settings."
+      when: uid_root.stdout != "0"
+
+    - name: (Optional) Install deps (one-time)
+      when: install_deps
+      block:
+        - name: apt deps
+          ansible.builtin.apt:
+            name: [python3-pip, python3-docker]
+            update_cache: true
+        - name: pip docker (fallback)
+          ansible.builtin.pip:
+            name: docker
+
   tasks:
-    - name: Ensure Python + Docker SDK are present for Ansible docker_container
-      ansible.builtin.apt:
-        name:
-          - python3-pip
-        update_cache: true
-
-    - name: Install Docker SDK for Python
-      ansible.builtin.pip:
-        name: docker
-
     - name: Read controller IP on {{ mn_if_name }}
       ansible.builtin.set_fact:
         vllm_host_ip: "{{ hostvars[inventory_hostname]['ansible_' + mn_if_name].ipv4.address }}"
 
-    - name: Start Ray head container (host network, privileged, GPUs)
+    - name: Start Ray head container
       community.docker.docker_container:
         name: "{{ container_name }}"
         image: "{{ vllm_image }}"
@@ -70,31 +75,43 @@
   hosts: spark
   become: true
   vars:
-    # If you want workers to use the same image as head, set it here or in group_vars/spark.yml
     vllm_image: "ericlewisplease/vllm:latest"
     mn_if_name: "enp1s0f0np0"
     hf_home: "/mnt/hfcache"
     ray_port: 6379
     shm_size: "10.24g"
-    # Use controller as head source of truth
+    install_deps: false
     head_host: "{{ groups['controller'][0] }}"
-    head_ip: "{{ hostvars[head_host].vllm_host_ip | default(hostvars[head_host]['ansible_' + hostvars[head_host].mn_if_name].ipv4.address) }}"
+    head_ip: "{{ hostvars[head_host].ansible_host | default(head_host) }}"
+
+  pre_tasks:
+    - name: Preflight - must be root via become
+      ansible.builtin.command: id -u
+      register: uid_root
+      changed_when: false
+
+    - name: Fail if become is not active
+      ansible.builtin.fail:
+        msg: "Become is not active (uid={{ uid_root.stdout }}). Fix Semaphore sudo/become settings."
+      when: uid_root.stdout != "0"
+
+    - name: (Optional) Install deps (one-time)
+      when: install_deps
+      block:
+        - name: apt deps
+          ansible.builtin.apt:
+            name: [python3-pip, python3-docker]
+            update_cache: true
+        - name: pip docker (fallback)
+          ansible.builtin.pip:
+            name: docker
+
   tasks:
-    - name: Ensure Python + Docker SDK are present for Ansible docker_container
-      ansible.builtin.apt:
-        name:
-          - python3-pip
-        update_cache: true
-
-    - name: Install Docker SDK for Python
-      ansible.builtin.pip:
-        name: docker
-
     - name: Read worker IP on {{ mn_if_name }}
       ansible.builtin.set_fact:
         vllm_host_ip: "{{ hostvars[inventory_hostname]['ansible_' + mn_if_name].ipv4.address }}"
 
-    - name: Start Ray worker container (host network, privileged, GPUs)
+    - name: Start Ray worker container
       community.docker.docker_container:
         name: "ray-worker"
         image: "{{ vllm_image }}"
