@@ -36,6 +36,17 @@
     restart: true                        # set false to “start if not running”
 
   tasks:
+    - name: Inspect target container state
+      ansible.builtin.command: docker inspect -f '{{"{{.State.Running}}"}}' {{ container_name }}
+      register: vllm_container_state
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if target container is missing or not running
+      ansible.builtin.fail:
+        msg: "Container {{ container_name }} must exist and be running before starting vLLM serve."
+      when: vllm_container_state.rc != 0 or (vllm_container_state.stdout | trim) != "true"
+
     - name: Build vLLM serve command
       ansible.builtin.set_fact:
         vllm_cmd: >-

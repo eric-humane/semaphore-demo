@@ -118,15 +118,23 @@
 
     # --- FWUPD ---
 
+    - name: Check if fwupdmgr is installed
+      ansible.builtin.command: bash -lc "command -v fwupdmgr"
+      register: fwupd_cmd
+      changed_when: false
+      failed_when: false
+
     - name: Refresh fwupd metadata
       ansible.builtin.command: fwupdmgr refresh --force
       changed_when: false
+      when: fwupd_cmd.rc == 0
 
     - name: Apply firmware updates
       ansible.builtin.command: fwupdmgr upgrade -y
       register: fwupd_upgrade
       failed_when: fwupd_upgrade.rc not in [0, 2]   # 2 == no updates
       changed_when: fwupd_upgrade.rc == 0
+      when: fwupd_cmd.rc == 0
 
     - name: Show fwupdmgr upgrade output
       ansible.builtin.debug:
@@ -134,6 +142,12 @@
           fwupdmgr upgrade (rc={{ fwupd_upgrade.rc }})
           {{ fwupd_upgrade.stdout | default('') }}
           {{ fwupd_upgrade.stderr | default('') }}
+      when: fwupd_cmd.rc == 0
+
+    - name: Skip fwupd (not installed)
+      ansible.builtin.debug:
+        msg: "fwupdmgr not installed on host; skipping firmware refresh/upgrade."
+      when: fwupd_cmd.rc != 0
 
     # --- Reboot detection + reboot ---
 
@@ -146,18 +160,19 @@
       ansible.builtin.command: fwupdmgr get-devices
       register: fwupd_devices
       changed_when: false
+      when: fwupd_cmd.rc == 0
 
     - name: Determine if reboot is required
       ansible.builtin.set_fact:
         reboot_required: >-
           {{
             reboot_required_apt.stat.exists or
-            ('reboot' in fwupd_devices.stdout | lower)
+            ('reboot' in (fwupd_devices.stdout | default('') | lower))
           }}
 
     - name: Log reboot decision
       ansible.builtin.debug:
-        msg: "reboot_required={{ reboot_required }} (apt={{ reboot_required_apt.stat.exists }}, fwupd_reboot_hint={{ 'reboot' in (fwupd_devices.stdout | lower) }})"
+        msg: "reboot_required={{ reboot_required }} (apt={{ reboot_required_apt.stat.exists }}, fwupd_reboot_hint={{ 'reboot' in (fwupd_devices.stdout | default('') | lower) }})"
 
     - name: Reboot if required (fast return)
       ansible.builtin.reboot:

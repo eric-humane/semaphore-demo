@@ -3,6 +3,9 @@
 - name: Start Ray head container on controller
   hosts: controller
   become: true
+  gather_facts: true
+  collections:
+    - community.docker
   vars:
     vllm_image: "nvcr.io/nvidia/vllm:25.11-py3"
     mn_if_name: "enp1s0f0np0"
@@ -37,9 +40,29 @@
             name: docker
 
   tasks:
-    - name: Read controller IP on {{ mn_if_name }}
+    - name: Compute controller IP (prefer {{ mn_if_name }}, fallback to default/ansible_host)
       ansible.builtin.set_fact:
-        vllm_host_ip: "{{ hostvars[inventory_hostname]['ansible_' + mn_if_name].ipv4.address }}"
+        vllm_host_ip: >-
+          {{
+            (hostvars[inventory_hostname]['ansible_' + mn_if_name].ipv4.address
+             if ('ansible_' + mn_if_name) in hostvars[inventory_hostname]
+             else (ansible_facts.get('ansible_default_ipv4', {}).get('address')
+                   or ansible_host
+                   or inventory_hostname))
+          }}
+        vllm_ip_source: >-
+          {{
+            ('interface:' + mn_if_name)
+            if ('ansible_' + mn_if_name) in hostvars[inventory_hostname]
+            else 'fallback:' + (ansible_facts.get('ansible_default_ipv4', {}).get('address')
+                                or ansible_host
+                                or inventory_hostname)
+          }}
+
+    - name: Fail if controller IP could not be determined
+      ansible.builtin.fail:
+        msg: "Unable to determine controller IP (mn_if_name={{ mn_if_name }}, ansible_default_ipv4={{ ansible_facts.get('ansible_default_ipv4', {}) }}, ansible_host={{ ansible_host | default('') }})"
+      when: vllm_host_ip is undefined or vllm_host_ip | length == 0
 
     - name: Start Ray head container
       community.docker.docker_container:
@@ -74,6 +97,9 @@
 - name: Start Ray worker containers on spark group
   hosts: spark
   become: true
+  gather_facts: true
+  collections:
+    - community.docker
   vars:
     vllm_image: "nvcr.io/nvidia/vllm:25.11-py3"
     mn_if_name: "enp1s0f0np0"
@@ -107,9 +133,29 @@
             name: docker
 
   tasks:
-    - name: Read worker IP on {{ mn_if_name }}
+    - name: Compute worker IP (prefer {{ mn_if_name }}, fallback to default/ansible_host)
       ansible.builtin.set_fact:
-        vllm_host_ip: "{{ hostvars[inventory_hostname]['ansible_' + mn_if_name].ipv4.address }}"
+        vllm_host_ip: >-
+          {{
+            (hostvars[inventory_hostname]['ansible_' + mn_if_name].ipv4.address
+             if ('ansible_' + mn_if_name) in hostvars[inventory_hostname]
+             else (ansible_facts.get('ansible_default_ipv4', {}).get('address')
+                   or ansible_host
+                   or inventory_hostname))
+          }}
+        vllm_ip_source: >-
+          {{
+            ('interface:' + mn_if_name)
+            if ('ansible_' + mn_if_name) in hostvars[inventory_hostname]
+            else 'fallback:' + (ansible_facts.get('ansible_default_ipv4', {}).get('address')
+                                or ansible_host
+                                or inventory_hostname)
+          }}
+
+    - name: Fail if worker IP could not be determined
+      ansible.builtin.fail:
+        msg: "Unable to determine worker IP (mn_if_name={{ mn_if_name }}, ansible_default_ipv4={{ ansible_facts.get('ansible_default_ipv4', {}) }}, ansible_host={{ ansible_host | default('') }})"
+      when: vllm_host_ip is undefined or vllm_host_ip | length == 0
 
     - name: Start Ray worker container
       community.docker.docker_container:

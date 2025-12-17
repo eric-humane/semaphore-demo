@@ -6,14 +6,27 @@
   vars:
     container_name: ray-head
   tasks:
+    - name: Check if head container exists
+      ansible.builtin.command: docker ps -a -q --filter "name=^/{{ container_name }}$"
+      register: head_container
+      changed_when: false
+      failed_when: false
+
     - name: Run ray status inside head container
       ansible.builtin.command: docker exec {{ container_name }} ray status
       register: ray_status
       changed_when: false
+      when: head_container.stdout | length > 0
 
     - name: Print ray status
       ansible.builtin.debug:
         var: ray_status.stdout
+      when: head_container.stdout | length > 0
+
+    - name: Head container missing
+      ansible.builtin.debug:
+        msg: "Container {{ container_name }} not present on host {{ inventory_hostname }}; skipping ray status."
+      when: head_container.stdout | length == 0
 
 - name: Ray worker health and diagnostics
   hosts: spark
