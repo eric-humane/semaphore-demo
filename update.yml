@@ -84,6 +84,22 @@
       register: apt_upgrade
       changed_when: "'0 upgraded' not in (apt_upgrade.stdout + apt_upgrade.stderr)"
 
+    # --- SNAP (update/upgrade) ---
+
+    - name: Check if snap is installed
+      ansible.builtin.command: bash -lc "command -v snap"
+      register: snap_cmd
+      changed_when: false
+      failed_when: false
+
+    - name: snap refresh (update/upgrade snaps)
+      ansible.builtin.command: snap refresh
+      register: snap_refresh
+      changed_when: >
+        (snap_refresh.stdout | lower) is not search("all snaps up to date") and
+        (snap_refresh.stdout | lower) is not search("no updates available")
+      when: snap_cmd.rc == 0
+
     # --- FWUPD ---
 
     - name: Refresh fwupd metadata
