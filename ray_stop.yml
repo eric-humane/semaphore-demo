@@ -1,0 +1,37 @@
+# ray_stop.yml
+---
+- name: Stop Ray head container on controller
+  hosts: controller
+  become: true
+  vars:
+    head_container_name: ray-head
+  tasks:
+    - name: Stop head container
+      ansible.builtin.command: docker stop {{ head_container_name }}
+      register: stop_head
+      changed_when: "'Stopped' in (stop_head.stdout | default(''))"
+      failed_when: false
+
+    - name: Remove head container
+      ansible.builtin.command: docker rm {{ head_container_name }}
+      register: rm_head
+      changed_when: "'Removed' in (rm_head.stdout | default(''))"
+      failed_when: false
+
+- name: Stop Ray worker containers on spark
+  hosts: spark
+  become: true
+  vars:
+    worker_container_name: ray-worker
+  tasks:
+    - name: Stop worker container
+      ansible.builtin.command: docker stop {{ worker_container_name }}
+      register: stop_worker
+      changed_when: "'Stopped' in (stop_worker.stdout | default(''))"
+      failed_when: false
+
+    - name: Remove worker container
+      ansible.builtin.command: docker rm {{ worker_container_name }}
+      register: rm_worker
+      changed_when: "'Removed' in (rm_worker.stdout | default(''))"
+      failed_when: false

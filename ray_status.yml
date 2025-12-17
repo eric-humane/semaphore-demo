@@ -15,13 +15,33 @@
       ansible.builtin.debug:
         var: ray_status.stdout
 
-- name: Ray worker process check
+- name: Ray worker health and diagnostics
   hosts: spark
   become: true
   vars:
     worker_container_name: ray-worker
+    tail_lines: 200
   tasks:
-    - name: Show ray processes inside worker container
+    - name: Inspect worker container state
+      ansible.builtin.command: docker inspect -f '{{"{{.State.Status}}"}} {{ "{{.State.Restarting}}" }} {{ "{{.RestartCount}}" }}' {{ worker_container_name }}
+      register: worker_state
+      changed_when: false
+      failed_when: false
+
+    - name: Set parsed state facts
+      ansible.builtin.set_fact:
+        worker_status: "{{ (worker_state.stdout.split()[0] if worker_state.stdout is defined and worker_state.stdout|length>0 else 'missing') }}"
+        worker_restarting: "{{ (worker_state.stdout.split()[1] if worker_state.stdout is defined and worker_state.stdout|length>0 else 'false') }}"
+        worker_restart_count: "{{ (worker_state.stdout.split()[2] if worker_state.stdout is defined and worker_state.stdout|length>0 else '0') }}"
+
+    - name: Get worker container logs when not running or restarting
+      ansible.builtin.command: docker logs --tail {{ tail_lines }} {{ worker_container_name }}
+      register: worker_logs
+      changed_when: false
+      failed_when: false
+      when: worker_status != "running" or worker_restarting == "true"
+
+    - name: Get ray process summary when container is running
       ansible.builtin.shell: |
         set -o pipefail
         docker exec {{ worker_container_name }} sh -lc \
@@ -30,9 +50,22 @@
         executable: /bin/bash
       register: worker_ray_ps
       changed_when: false
+      failed_when: false
+      when: worker_status == "running" and worker_restarting != "true"
 
-    - name: Print worker process summary
+    - name: Report worker status
       ansible.builtin.debug:
         msg: |
-          {{ inventory_hostname }}:
+          host={{ inventory_hostname }}
+          container={{ worker_container_name }}
+          status={{ worker_status }}
+          restarting={{ worker_restarting }}
+          restart_count={{ worker_restart_count }}
+
+          {% if worker_status == "running" and worker_restarting != "true" %}
+          ray_ps:
           {{ worker_ray_ps.stdout | default('no output') }}
+          {% else %}
+          last_logs:
+          {{ worker_logs.stdout | default('no logs') }}
+          {% endif %}
