@@ -1,36 +1,77 @@
 ---
 - name: System + firmware update with conditional reboot
-  hosts: all
+  hosts: spark
   become: true
+  serial: 1               # avoid 6 nodes hammering apt/mirrors at once
   vars:
     reboot_timeout: 900
 
   tasks:
-    - name: Preflight - show remote user (no become)
-      ansible.builtin.command: whoami
-      register: whoami_plain
-      changed_when: false
-    
-    - name: Preflight - show effective user with become
-      become: true
+    - name: Preflight - must be root via become
       ansible.builtin.command: id -u
       register: uid_root
       changed_when: false
-    
+
     - name: Fail if become is not working
       ansible.builtin.fail:
-        msg: "Become is not active. Plain user={{ whoami_plain.stdout }}, uid_with_become={{ uid_root.stdout }}. Fix Semaphore inventory/template sudo config."
+        msg: "Become is not active (uid={{ uid_root.stdout }})."
       when: uid_root.stdout != "0"
-      
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: yes
-        cache_valid_time: 3600
 
-    - name: Perform dist-upgrade
-      ansible.builtin.apt:
-        upgrade: dist
+    # --- APT: make it deterministic and verbose ---
+
+    - name: Stop apt background services that hold locks
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - apt-daily.service
+        - apt-daily-upgrade.service
+        - unattended-upgrades.service
+      ignore_errors: true
+
+    - name: Disable apt background timers (temporary for this run)
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - apt-daily.timer
+        - apt-daily-upgrade.timer
+      ignore_errors: true
+
+    - name: Wait for dpkg/apt locks to clear
+      ansible.builtin.shell: |
+        set -euo pipefail
+        for f in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
+          while fuser "$f" >/dev/null 2>&1; do
+            sleep 2
+          done
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: apt update (use apt-get so stderr is visible)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -y
+      args:
+        executable: /bin/bash
+      register: apt_update
+      changed_when: false
+
+    - name: apt dist-upgrade
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -o Dpkg::Options::="--force-confnew" dist-upgrade -y
+      args:
+        executable: /bin/bash
       register: apt_upgrade
+      changed_when: "'0 upgraded' not in (apt_upgrade.stdout + apt_upgrade.stderr)"
+
+    # --- FWUPD (keep as you had it) ---
 
     - name: Refresh fwupd metadata
       ansible.builtin.command: fwupdmgr refresh --force
@@ -40,7 +81,7 @@
       ansible.builtin.command: fwupdmgr upgrade -y
       register: fwupd_upgrade
       failed_when: fwupd_upgrade.rc not in [0, 2]
-      # rc=2 means "no updates available"
+      changed_when: fwupd_upgrade.rc == 0
 
     - name: Check if reboot is required (apt)
       ansible.builtin.stat:
