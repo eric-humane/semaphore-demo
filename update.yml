@@ -2,11 +2,19 @@
 - name: System + firmware update with conditional reboot
   hosts: spark
   become: true
-  serial: 1               # avoid 6 nodes hammering apt/mirrors at once
+  serial: 1
+  max_fail_percentage: 0
   vars:
     reboot_timeout: 900
 
   tasks:
+    # --- Preflight (prove become + show who we are) ---
+
+    - name: Preflight - show remote user (no become)
+      ansible.builtin.command: whoami
+      register: whoami_plain
+      changed_when: false
+
     - name: Preflight - must be root via become
       ansible.builtin.command: id -u
       register: uid_root
@@ -14,12 +22,17 @@
 
     - name: Fail if become is not working
       ansible.builtin.fail:
-        msg: "Become is not active (uid={{ uid_root.stdout }})."
+        msg: "Become is not active. remote_user={{ whoami_plain.stdout }}, uid_with_become={{ uid_root.stdout }}."
       when: uid_root.stdout != "0"
 
-    # --- APT: make it deterministic and verbose ---
+    # --- APT: deterministic + avoid lock races ---
 
-    - name: Stop apt background services that hold locks
+    - name: List systemd unit files (for conditional service/timer handling)
+      ansible.builtin.command: systemctl list-unit-files
+      register: unit_files
+      changed_when: false
+
+    - name: Stop apt background services that hold locks (if present)
       ansible.builtin.systemd:
         name: "{{ item }}"
         state: stopped
@@ -27,9 +40,9 @@
         - apt-daily.service
         - apt-daily-upgrade.service
         - unattended-upgrades.service
-      ignore_errors: true
+      when: item in unit_files.stdout
 
-    - name: Disable apt background timers (temporary for this run)
+    - name: Disable apt background timers (temporary for this run, if present)
       ansible.builtin.systemd:
         name: "{{ item }}"
         state: stopped
@@ -37,7 +50,7 @@
       loop:
         - apt-daily.timer
         - apt-daily-upgrade.timer
-      ignore_errors: true
+      when: item in unit_files.stdout
 
     - name: Wait for dpkg/apt locks to clear
       ansible.builtin.shell: |
@@ -51,7 +64,7 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: apt update (use apt-get so stderr is visible)
+    - name: apt update (apt-get so stderr is visible in Semaphore logs)
       ansible.builtin.shell: |
         set -euo pipefail
         export DEBIAN_FRONTEND=noninteractive
@@ -71,7 +84,7 @@
       register: apt_upgrade
       changed_when: "'0 upgraded' not in (apt_upgrade.stdout + apt_upgrade.stderr)"
 
-    # --- FWUPD (keep as you had it) ---
+    # --- FWUPD ---
 
     - name: Refresh fwupd metadata
       ansible.builtin.command: fwupdmgr refresh --force
@@ -80,8 +93,10 @@
     - name: Apply firmware updates
       ansible.builtin.command: fwupdmgr upgrade -y
       register: fwupd_upgrade
-      failed_when: fwupd_upgrade.rc not in [0, 2]
+      failed_when: fwupd_upgrade.rc not in [0, 2]   # 2 == no updates
       changed_when: fwupd_upgrade.rc == 0
+
+    # --- Reboot detection + reboot ---
 
     - name: Check if reboot is required (apt)
       ansible.builtin.stat:
@@ -100,6 +115,10 @@
             reboot_required_apt.stat.exists or
             ('reboot' in fwupd_devices.stdout | lower)
           }}
+
+    - name: Log reboot decision
+      ansible.builtin.debug:
+        msg: "reboot_required={{ reboot_required }} (apt={{ reboot_required_apt.stat.exists }}, fwupd_reboot_hint={{ 'reboot' in (fwupd_devices.stdout | lower) }})"
 
     - name: Reboot if required
       ansible.builtin.reboot:
